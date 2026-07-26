@@ -1899,7 +1899,7 @@ local function try_aura()
 end
 
 -- pick the live part to aim at (head or body) straight off the character each frame
-local function aim_part(char)
+st.aim_part = function(char)
     if not char then return nil end
     if cfg.sl_part=="body" then
         return try(function() return char:FindFirstChild("UpperTorso") end)
@@ -1915,11 +1915,11 @@ local function aim_part(char)
         or try(function() return char:FindFirstChildWhichIsA("BasePart") end)
 end
 
-local function live_aim_pos(t)
+st.live_aim_pos = function(t)
     if not t then return nil end
     local char=t.char
     if char and not try(function() return char.Parent end) then return nil end
-    local part=aim_part(char) or t.root
+    local part=st.aim_part(char) or t.root
     if not part then return t.hpos or t.pos end
     local p=try(function() return part.Position end)
     if not p then return t.hpos or t.pos end
@@ -1933,7 +1933,7 @@ local function live_aim_pos(t)
     return p
 end
 
-local function sl_pick()
+st.sl_pick = function()
     local tgts=tgts_cached(); if #tgts==0 then return nil end  -- shared cache, no per-frame workspace walk
     local my=get_pos(); local best,bd=nil,math.huge
     for _,t in ipairs(tgts) do
@@ -1949,16 +1949,16 @@ local function sl_pick()
     return best
 end
 
-local function do_sl()
+st.do_sl = function()
     if not cfg.sl then st.sl_on=false; st.sl_tgt=nil; return end
     if not st.sl_on then return end
     if tick()>st.sl_til then st.sl_on=false; st.sl_tgt=nil; return end
     if not st.sl_tgt then
-        local t=sl_pick(); if not t then return end
+        local t=st.sl_pick(); if not t then return end
         st.sl_tgt=t
     end
     local t=st.sl_tgt; if not t then return end
-    local ap=live_aim_pos(t); if not ap then st.sl_tgt=nil; return end  -- read fresh pos, drop dead target
+    local ap=st.live_aim_pos(t); if not ap then st.sl_tgt=nil; return end  -- read fresh pos, drop dead target
     local cam=workspace.CurrentCamera; if not cam then return end
     local vp=try(function() return cam.ViewportSize end); if not vp then return end
     local ok_sp,sp,on=pcall(WorldToScreen,ap)
@@ -1971,11 +1971,11 @@ local function do_sl()
     if type(mousemoverel)=="function" and (abs(dx)>0.3 or abs(dy)>0.3) then pcall(mousemoverel,0,fl(dx),fl(dy)) end
 end
 
-local esp_acc=0
+st.st.esp_acc=0
 
 -- soft reload: clear all stuck per-shot state + effect dedup. matcha has no console clear,
 -- so this also prints a divider so the old areas spam is visually cut off.
-local function soft_reset(tag)
+st.soft_reset = function(tag)
     shot=nil; parry_queue={}; miss_n=0; gp_lock=0; siege_s2_t=0
     phx_log.active=false; st.last_gun="castigate"; aura_pending=false
     seen_eff={}; seen_vfx={}; seen_part={}; seen_pt={}
@@ -1990,7 +1990,7 @@ task.spawn(function()
     local last_p
     while loops_active do
         local p=get_pos()
-        if p and last_p and sq(dsq(p,last_p))>250 then soft_reset("teleport") end
+        if p and last_p and sq(dsq(p,last_p))>250 then st.soft_reset("teleport") end
         last_p=p
         task.wait(0.2)
     end
@@ -1998,8 +1998,8 @@ end)
 
 run.RenderStepped:Connect(function(dt)
     if not loops_active then return end
-    esp_acc=esp_acc+(dt or 0)
-    if esp_acc<0.016 then return end  -- cap esp redraw ~60hz, saves work on high refresh screens
+    st.esp_acc=(st.esp_acc or 0)+(dt or 0)
+    if st.esp_acc<0.016 then return end  -- cap esp redraw ~60hz, saves work on high refresh screens
     esp_acc=0
     update_esp()
 end)
@@ -2072,13 +2072,13 @@ task.spawn(function()
             local held=try(function() return iskeypressed(khex(cfg.sl_key)) end) or false
             if held then
                 if not st.sl_tgt then
-                    local tgt=sl_pick()
+                    local tgt=st.sl_pick()
                     if tgt then st.sl_on=true; st.sl_tgt=tgt end
                 end
                 if st.sl_on then st.sl_til=tick()+(cfg.sl_dur or 14)/10 end
             end
         end
-        do_sl(); task.wait(1/get_fps())
+        st.do_sl(); task.wait(1/get_fps())
     end
 end)
 
@@ -2123,7 +2123,7 @@ task.spawn(function()
     if type(UiLib)~="table" then rn("MatchaUI load failed","Redline",8); return end
 
     local Window=UiLib.CreateWindow({
-        Title  = "Redline  v25   |   koji_xyz",
+        Title  = "Redline  v26   |   koji_xyz",
         X      = 70,
         Y      = 50,
         Width  = 640,
@@ -2392,7 +2392,7 @@ task.spawn(function()
     end)
 
     pcall(function() UiLib.Notify("Redline","loaded minimized  |  Pg Up = menu",5) end)
-    log("[rl] v25 hybrid AP | MatchaUI | Pg Up menu | fps "..get_fps())
+    log("[rl] v26 register fix | MatchaUI | Pg Up menu | fps "..get_fps())
 
     UiLib.Run()
 end)
