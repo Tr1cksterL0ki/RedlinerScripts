@@ -1971,7 +1971,7 @@ st.do_sl = function()
     if type(mousemoverel)=="function" and (abs(dx)>0.3 or abs(dy)>0.3) then pcall(mousemoverel,0,fl(dx),fl(dy)) end
 end
 
-st.st.esp_acc=0
+st.esp_acc=0
 
 -- soft reload: clear all stuck per-shot state + effect dedup. matcha has no console clear,
 -- so this also prints a divider so the old areas spam is visually cut off.
@@ -2123,7 +2123,7 @@ task.spawn(function()
     if type(UiLib)~="table" then rn("MatchaUI load failed","Redline",8); return end
 
     local Window=UiLib.CreateWindow({
-        Title  = "Redline  v26   |   koji_xyz",
+        Title  = "Redline  v27   |   koji_xyz",
         X      = 70,
         Y      = 50,
         Width  = 640,
@@ -2392,7 +2392,7 @@ task.spawn(function()
     end)
 
     pcall(function() UiLib.Notify("Redline","loaded minimized  |  Pg Up = menu",5) end)
-    log("[rl] v26 register fix | MatchaUI | Pg Up menu | fps "..get_fps())
+    log("[rl] v27 esp counter fix | MatchaUI | Pg Up menu | fps "..get_fps())
 
     UiLib.Run()
 end)
