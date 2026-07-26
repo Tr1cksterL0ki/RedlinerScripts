@@ -1,4 +1,4 @@
--- redline.lua | koji_xyz | v24-head-ray-ap
+-- redline.lua | koji_xyz | v26-rayfix
 -- UI: UI Library - Script utility | shystemmm
 -- indicator arc auto parry adapted from larina
 
@@ -96,7 +96,7 @@ local key_hex = {
     z=0x5A,x=0x58,c=0x43,v=0x56,b=0x42,n=0x4E,m=0x4D,
     f1=0x70,f2=0x71,f3=0x72,f4=0x73,f5=0x74,f6=0x75,f7=0x76,f8=0x77,
     lshift=0xA0,rshift=0xA1,lctrl=0xA2,rctrl=0xA3,lalt=0xA4,ralt=0xA5,
-    capslock=0x14,tab=0x09,space=0x20,pageup=0x21,pgup=0x21,
+    capslock=0x14,tab=0x09,space=0x20,
     ['1']=0x31,['2']=0x32,['3']=0x33,['4']=0x34,['5']=0x35,
     numpad0=0x60,numpad1=0x61,numpad2=0x62,
 }
@@ -727,8 +727,68 @@ local function ap_read_arc(ind)
     return ap_s_from_rot(r),prr+r/2
 end
 
+local ap_ray_fallback_logged=false
+
+local function ap_local_ray_targets(char)
+    local out,seen={},{}
+    for _,nm in ipairs({"Head","UpperTorso","Torso","HumanoidRootPart"}) do
+        local part=try(function() return char:FindFirstChild(nm) end)
+        if part and try(function() return part:IsA("BasePart") end) and not seen[part] then
+            seen[part]=true; out[#out+1]=part
+        end
+    end
+    local primary=try(function() return char.PrimaryPart end)
+    if primary and not seen[primary] then seen[primary]=true; out[#out+1]=primary end
+    if #out==0 then
+        local any=try(function() return char:FindFirstChildWhichIsA("BasePart",true) end)
+        if any then out[1]=any end
+    end
+    return out
+end
+
+local function ap_map_los(origin,target)
+    local map=try(function() return workspace:FindFirstChild("Map") end)
+    local main=map and try(function() return map:FindFirstChild("Main") end)
+    if not main then return true,true end
+
+    local ok,clear=pcall(function()
+        local params=RaycastParams.new()
+        params.FilterType=Enum.RaycastFilterType.Include
+        params.FilterDescendantsInstances={main}
+        params.IgnoreWater=true
+
+        local cursor=origin
+        for _=1,32 do
+            local dir=target-cursor
+            if dir.Magnitude<=0.05 then return true end
+
+            local hit=workspace:Raycast(cursor,dir,params)
+            if not hit then return true end
+
+            local part=hit.Instance
+            local transparent=part and part:IsA("BasePart") and part.Transparency>=0.98
+            if not transparent then return false end
+            cursor=hit.Position+dir.Unit*0.05
+        end
+        return false
+    end)
+    if ok then return clear,true end
+
+    local old_ok,old_clear=pcall(function()
+        if not Ray or type(Ray.new)~="function" then error("legacy ray unavailable") end
+        local dir=target-origin
+        local hit=workspace:FindPartOnRayWithWhitelist(Ray.new(origin,dir),{main},true)
+        if not hit then return true end
+        return hit:IsA("BasePart") and hit.Transparency>=0.98
+    end)
+    if old_ok then return old_clear,true end
+    return nil,false
+end
+
 gun_ray_aims_at_me=function(shooter)
     if not shooter then return false end
+    if cfg.team_check and not is_hostile_ref(shooter) then return false end
+
     local p=player_from_ref(shooter)
     local src=(p and try(function() return p.Character end)) or shooter
     local head=src and try(function() return src:FindFirstChild("Head") end)
@@ -736,22 +796,31 @@ gun_ray_aims_at_me=function(shooter)
     if not head or not me or not try(function() return head:IsA("BasePart") end) then return false end
 
     local origin=try(function() return head.Position end)
-    local look=try(function() return head.CFrame.LookVector end)
-    if not origin or not look or look.Magnitude<1e-3 then return false end
+    if not origin then return false end
 
-    local range=mx(1000,tonumber(cfg.gp_dist) or 1000)
-    local ok,res=pcall(function()
-        local params=RaycastParams.new()
-        params.FilterType=Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances={src}
-        params.IgnoreWater=true
-        return workspace:Raycast(origin,look.Unit*range,params)
-    end)
-    if not ok or not res then return false end
+    local targets=ap_local_ray_targets(me)
+    if #targets==0 then return false end
 
-    local hit=try(function() return res.Instance end)
-    if not hit then return false end
-    return hit==me or try(function() return hit:IsDescendantOf(me) end)==true
+    local ray_supported=false
+    for _,part in ipairs(targets) do
+        local target=try(function() return part.Position end)
+        if target then
+            local clear,supported=ap_map_los(origin,target)
+            if supported then
+                ray_supported=true
+                if clear then return true end
+            end
+        end
+    end
+
+    if not ray_supported then
+        if not ap_ray_fallback_logged then
+            ap_ray_fallback_logged=true
+            dlog("[ap ray] Matcha ray API unavailable; using resolved hostile indicator fallback")
+        end
+        return true
+    end
+    return false
 end
 
 local function ap_has_los(shooter)
@@ -1899,7 +1968,7 @@ local function try_aura()
 end
 
 -- pick the live part to aim at (head or body) straight off the character each frame
-st.aim_part = function(char)
+local function aim_part(char)
     if not char then return nil end
     if cfg.sl_part=="body" then
         return try(function() return char:FindFirstChild("UpperTorso") end)
@@ -1915,11 +1984,11 @@ st.aim_part = function(char)
         or try(function() return char:FindFirstChildWhichIsA("BasePart") end)
 end
 
-st.live_aim_pos = function(t)
+local function live_aim_pos(t)
     if not t then return nil end
     local char=t.char
     if char and not try(function() return char.Parent end) then return nil end
-    local part=st.aim_part(char) or t.root
+    local part=aim_part(char) or t.root
     if not part then return t.hpos or t.pos end
     local p=try(function() return part.Position end)
     if not p then return t.hpos or t.pos end
@@ -1933,7 +2002,7 @@ st.live_aim_pos = function(t)
     return p
 end
 
-st.sl_pick = function()
+local function sl_pick()
     local tgts=tgts_cached(); if #tgts==0 then return nil end  -- shared cache, no per-frame workspace walk
     local my=get_pos(); local best,bd=nil,math.huge
     for _,t in ipairs(tgts) do
@@ -1949,16 +2018,16 @@ st.sl_pick = function()
     return best
 end
 
-st.do_sl = function()
+local function do_sl()
     if not cfg.sl then st.sl_on=false; st.sl_tgt=nil; return end
     if not st.sl_on then return end
     if tick()>st.sl_til then st.sl_on=false; st.sl_tgt=nil; return end
     if not st.sl_tgt then
-        local t=st.sl_pick(); if not t then return end
+        local t=sl_pick(); if not t then return end
         st.sl_tgt=t
     end
     local t=st.sl_tgt; if not t then return end
-    local ap=st.live_aim_pos(t); if not ap then st.sl_tgt=nil; return end  -- read fresh pos, drop dead target
+    local ap=live_aim_pos(t); if not ap then st.sl_tgt=nil; return end  -- read fresh pos, drop dead target
     local cam=workspace.CurrentCamera; if not cam then return end
     local vp=try(function() return cam.ViewportSize end); if not vp then return end
     local ok_sp,sp,on=pcall(WorldToScreen,ap)
@@ -1971,11 +2040,11 @@ st.do_sl = function()
     if type(mousemoverel)=="function" and (abs(dx)>0.3 or abs(dy)>0.3) then pcall(mousemoverel,0,fl(dx),fl(dy)) end
 end
 
-st.esp_acc=0
+local esp_acc=0
 
 -- soft reload: clear all stuck per-shot state + effect dedup. matcha has no console clear,
 -- so this also prints a divider so the old areas spam is visually cut off.
-st.soft_reset = function(tag)
+local function soft_reset(tag)
     shot=nil; parry_queue={}; miss_n=0; gp_lock=0; siege_s2_t=0
     phx_log.active=false; st.last_gun="castigate"; aura_pending=false
     seen_eff={}; seen_vfx={}; seen_part={}; seen_pt={}
@@ -1990,7 +2059,7 @@ task.spawn(function()
     local last_p
     while loops_active do
         local p=get_pos()
-        if p and last_p and sq(dsq(p,last_p))>250 then st.soft_reset("teleport") end
+        if p and last_p and sq(dsq(p,last_p))>250 then soft_reset("teleport") end
         last_p=p
         task.wait(0.2)
     end
@@ -1998,8 +2067,8 @@ end)
 
 run.RenderStepped:Connect(function(dt)
     if not loops_active then return end
-    st.esp_acc=(st.esp_acc or 0)+(dt or 0)
-    if st.esp_acc<0.016 then return end  -- cap esp redraw ~60hz, saves work on high refresh screens
+    esp_acc=esp_acc+(dt or 0)
+    if esp_acc<0.016 then return end  -- cap esp redraw ~60hz, saves work on high refresh screens
     esp_acc=0
     update_esp()
 end)
@@ -2072,13 +2141,13 @@ task.spawn(function()
             local held=try(function() return iskeypressed(khex(cfg.sl_key)) end) or false
             if held then
                 if not st.sl_tgt then
-                    local tgt=st.sl_pick()
+                    local tgt=sl_pick()
                     if tgt then st.sl_on=true; st.sl_tgt=tgt end
                 end
                 if st.sl_on then st.sl_til=tick()+(cfg.sl_dur or 14)/10 end
             end
         end
-        st.do_sl(); task.wait(1/get_fps())
+        do_sl(); task.wait(1/get_fps())
     end
 end)
 
@@ -2123,7 +2192,7 @@ task.spawn(function()
     if type(UiLib)~="table" then rn("MatchaUI load failed","Redline",8); return end
 
     local Window=UiLib.CreateWindow({
-        Title  = "Redline  v27   |   koji_xyz",
+        Title  = "Redline  v23   |   koji_xyz",
         X      = 70,
         Y      = 50,
         Width  = 640,
@@ -2329,7 +2398,7 @@ task.spawn(function()
         local c=Window.AddCategory("Config")
         Window.AddSection(c,"Theme")
         Window.AddDropdown(c,"Color theme",theme_list,cfg.theme,function(sel) cfg.theme=sel; apply_theme(sel); mark_chg() end)
-        kbMenu=Window.AddKeybind(c,"Menu toggle key",0x21,function(k,n) rn("menu key set","Redline",2) end)
+        kbMenu=Window.AddKeybind(c,"Menu toggle key",0x11,function(k,n) rn("menu key set","Redline",2) end)
         Window.AddSection(c,"Config")
         tip(Window.AddToggle(c,"Auto save (2s)",cfg.auto_save,function(s) cfg.auto_save=s end),"saves your settings 2s after any change")
         Window.AddButton(c,"Save config",function() cfg_save() end)
@@ -2345,15 +2414,15 @@ task.spawn(function()
     end)
 
     apply_theme(cfg.theme)
-    pcall(function() Window.SetVisible(false) end)  -- start minimized; Pg Up reopens it
+    pcall(function() Window.SetVisible(true) end)  -- everything built, now show it
 
-    -- menu toggle key (Pg Up default, rebind in Config)
+    -- menu toggle key (Ctrl default, rebind in Config)
     task.spawn(function()
         local last=false
         while loops_active do
             local active=false; pcall(function() active=isrbxactive() end)
             if active then
-                local vk=(kbMenu and kbMenu.Key) or 0x21
+                local vk=(kbMenu and kbMenu.Key) or 0x11
                 local dn=false; pcall(function() dn=iskeypressed(vk) end)
                 if dn and not last then pcall(function() Window.SetVisible(not Window.Visible) end) end
                 last=dn
@@ -2391,8 +2460,8 @@ task.spawn(function()
         end
     end)
 
-    pcall(function() UiLib.Notify("Redline","loaded minimized  |  Pg Up = menu",5) end)
-    log("[rl] v27 esp counter fix | MatchaUI | Pg Up menu | fps "..get_fps())
+    pcall(function() UiLib.Notify("Redline","loaded  |  koji_xyz  (Ctrl = menu)",5) end)
+    log("[rl] v23 hybrid AP | MatchaUI | fps "..get_fps())
 
     UiLib.Run()
 end)
